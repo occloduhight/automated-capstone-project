@@ -1,5 +1,6 @@
-# Local Terraform directories
+# Ignore local Terraform directories and lock file
 .terraform/
+.terraform.lock.hcl
 
 # Terraform state files (sensitive)
 *.tfstate
@@ -12,30 +13,8 @@
 crash.log
 crash.*.log
 
-# Sensitive variable files
+# Terraform variable files that may contain secrets
 *.tfvars
-*.tfvars.json
 
-# Override files (local customizations)
-override.tf
-override.tf.json
-*_override.tf
-*_override.tf.json
-# Include specific override files in version control if needed
-# !example_override.tf
-
-# Terraform lock info (transient files)
-.terraform.tfstate.lock.info
-.terraform.lock.hcl   # optional: track only if you want consistent provider versions
-
-# CLI configuration files (may contain credentials)
-.terraformrc
-terraform.rc
-
-# Optional: environment files containing secrets
-.env
-# Terraform files to ignore
-
-
-*.tfstate.backup
-
+# Ignore provider binaries on Windows
+*.exe
