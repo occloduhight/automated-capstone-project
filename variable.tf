@@ -6,7 +6,7 @@ variable "prv_sn2" {}
 variable "redhat_ami" {}
 variable "instance_type" {}
 variable "db_name" {}
-variable "dbcred" {}
-variable "db_username" {}
-variable "db_password" {}
+variable "dbcred" {
+  type = map(string)
+}
 variable "alert_email" {}

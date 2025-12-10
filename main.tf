@@ -5,11 +5,14 @@ locals {
 # Create a custom VPC
 resource "aws_vpc" "vpc" {
   cidr_block = var.cidr
+   enable_dns_support   = true
+  enable_dns_hostnames = true
 
   tags = {
     Name = "${local.name}-vpc"
   }
 }
+
 #  Create Public subnet 1
 resource "aws_subnet" "pub_sn1" {
   vpc_id                  = aws_vpc.vpc.id
@@ -36,8 +39,6 @@ resource "aws_subnet" "prv_sn1" {
   vpc_id                  = aws_vpc.vpc.id
   cidr_block              = var.prv_sn1
   availability_zone       = "eu-west-3a"
-  map_public_ip_on_launch = true
-
   tags = {
     Name = "${local.name}-prv-sn1"
   }
@@ -48,7 +49,7 @@ resource "aws_subnet" "prv_sn2" {
   vpc_id                  = aws_vpc.vpc.id
   cidr_block              = var.prv_sn2
   availability_zone       = "eu-west-3b"
-  map_public_ip_on_launch = true
+  
   tags = {
     Name = "${local.name}-prv-sn2"
   }
@@ -89,7 +90,10 @@ resource "aws_route_table" "prv_rt" {
   tags = {
     Name = "${local.name}-prv-rt"
   }
+
+  depends_on = [aws_nat_gateway.ngw]  
 }
+
 
 # Attaching public subnet 1 to public route table
 resource "aws_route_table_association" "pub_rt_asso1" {
@@ -191,13 +195,14 @@ resource "aws_security_group" "rds_sg" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["10.0.0.0/16"] # restrict egress to your VPC CIDR
   }
 
   tags = {
     Name = "${local.name}-rds-sg"
   }
 }
+
 
 resource "tls_private_key" "key" {
   algorithm = "RSA"
@@ -254,17 +259,32 @@ resource "aws_iam_role_policy_attachment" "wordpress_policy_attach" {
 resource "aws_instance" "wordpress_server" {
   ami                         = var.redhat_ami
   instance_type               = var.instance_type
+  subnet_id                   = aws_subnet.pub_sn1.id   # public subnet
   associate_public_ip_address = true
-  subnet_id                   = aws_subnet.pub_sn1.id
-  vpc_security_group_ids = [aws_security_group.frontend_sg.id]
+  vpc_security_group_ids      = [aws_security_group.frontend_sg.id]
 
   iam_instance_profile = aws_iam_instance_profile.wordpress_instance_profile.name
   key_name             = aws_key_pair.key.key_name
-  user_data            = local.wordpress_script
+
+  # Inject cleaned WordPress user data
+  user_data = local.wordpress_script
 
   tags = {
-    Name    = "${local.name}-wordpress-server"
+    Name = "${local.name}-wordpress-server"
   }
+}
+
+# Make sure the instance is accessible via Load Balancer
+resource "aws_lb_target_group_attachment" "lb_attachment_http" {
+  target_group_arn = aws_lb_target_group.wordpress_http_tg.arn
+  target_id        = aws_instance.wordpress_server.id
+  port             = 80
+}
+
+resource "aws_lb_target_group_attachment" "lb_attachment_https" {
+  target_group_arn = aws_lb_target_group.wordpress_https_tg.arn
+  target_id        = aws_instance.wordpress_server.id
+  port             = 443
 }
 
 # Amazon machine image (AMI) for the backend instance
@@ -284,7 +304,7 @@ resource "aws_ami_from_instance" "custom_ami" {
 
 # #insert secret manager here
 resource "aws_secretsmanager_secret" "db_cred" {
-  name        = "${local.name}-wordpress-db-credentials"
+  name        = "${local.name}-wordpress-db-credentials2"
   description = "Database credentials for the WordPress application"
 }
 
@@ -302,20 +322,22 @@ resource "aws_db_subnet_group" "wordpress_db_subnet" {
 
 #Create RDS MySQL Instance
 resource "aws_db_instance" "wordpress_db" {
-  identifier        = "${local.name}-wordpress-db"
-  allocated_storage = 20
-  max_allocated_storage = 100
-  engine        = "mysql"
-  engine_version = "8.0"
-  instance_class = "db.t3.micro"
-  username = var.dbcred["username"]
-  password = var.dbcred["password"]
+  identifier             = "${local.name}-wordpress-db"
+  allocated_storage      = 20
+  max_allocated_storage  = 100
+  engine                 = "mysql"
+  engine_version         = "8.0"
+  instance_class         = "db.t3.micro"
+  username               = var.dbcred["username"]
+  password               = var.dbcred["password"]
   db_subnet_group_name   = aws_db_subnet_group.wordpress_db_subnet.name
   vpc_security_group_ids = [aws_security_group.rds_sg.id]
   parameter_group_name   = "default.mysql8.0"
-  db_name = var.db_name
-  skip_final_snapshot = true  
-  
+  db_name                = var.db_name
+  skip_final_snapshot    = true
+  publicly_accessible    = true
+  multi_az               = true
+
   tags = {
     Name = "${local.name}-wordpress-db"
   }
@@ -375,20 +397,6 @@ resource "aws_lb_target_group" "wordpress_https_tg" {
   tags = {
     Name = "${local.name}-wordpress-https-tg"
   }
-}
-
-# Load balancer attachement
-#HTTP Load balancer attachment
-resource "aws_lb_target_group_attachment" "lb_attachment_http" {
-  target_group_arn = aws_lb_target_group.wordpress_http_tg.arn
-  target_id        = aws_instance.wordpress_server.id
-  port             = 80
-}
-# HTTPS Load balancer attachment
-resource "aws_lb_target_group_attachment" "lb_attachment_https" {
-  target_group_arn = aws_lb_target_group.wordpress_https_tg.arn
-  target_id        = aws_instance.wordpress_server.id
-  port             = 443
 }
 
 # launch template
@@ -581,6 +589,34 @@ resource "aws_s3_bucket" "code_bucket" {
     Name = "${local.name}-code-bucket"
   }
 }
+resource "aws_iam_policy" "s3_access_policy" {
+  name = "${local.name}-s3-access-policy"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.media_bucket.arn
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject"
+        ]
+        Resource = [
+          "${aws_s3_bucket.media_bucket.arn}/*"
+        ]
+      }
+    ]
+  })
+}
 resource "aws_iam_role" "ec2_role" {
   name = "${local.name}-ec2-role"
 
@@ -598,26 +634,6 @@ resource "aws_iam_role" "ec2_role" {
   tags = {
     Name = "${local.name}-ec2-role"
   }
-}
-
-resource "aws_iam_policy" "s3_access_policy" {
-  name   = "${local.name}-s3-access-policy"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = [
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:ListBucket"
-      ]
-      Resource = [
-        aws_s3_bucket.media_bucket.arn,
-        "${aws_s3_bucket.media_bucket.arn}/*"
-      ]
-    }]
-  })
 }
 
 resource "aws_iam_role_policy_attachment" "s3_policy_attach" {
