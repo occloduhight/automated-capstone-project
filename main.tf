@@ -1,5 +1,6 @@
 locals {
   name = "autocap"
+  email = "chinweodochi@gmail.com"
   s3_origin_id  = aws_s3_bucket.autocap_media.id
 }
 
@@ -321,34 +322,53 @@ resource "aws_iam_instance_profile" "iam_instance_profile" {
   role = aws_iam_role.iam_role.name
 }
 
-# Log Bucket
+# Creating log bucket
 resource "aws_s3_bucket" "autocap_log_bucket" {
   bucket        = "autocap-log-bucket"
+  depends_on    = [null_resource.pre_scan]
   force_destroy = true
 
   tags = {
-    Name = "${local.name}-autocap_log_bucket"
+    Name = "${local.name}-autocap-log-bucket"
   }
 }
 
-# resource "aws_s3_bucket" "autocap_log_bucket" {
-#   bucket        = "autocap-log-bucket"
-#   force_destroy = true
-
-#   tags = {
-#     Name = "${local.name}-autocap-log-bucket"
-#   }
-# }
-
+# Disable S3 Block Public Access BEFORE applying policy
 resource "aws_s3_bucket_public_access_block" "log_bucket_access_block" {
-  bucket                  = aws_s3_bucket.autocap_log_bucket.id
+  bucket = aws_s3_bucket.autocap_log_bucket.id
+
   block_public_acls       = false
   ignore_public_acls      = false
   block_public_policy     = false
   restrict_public_buckets = false
 }
 
-data "aws_iam_policy_document" "log_bucket_access_policy" {
+# Ownership controls
+resource "aws_s3_bucket_ownership_controls" "log_bucket_owner" {
+  bucket = aws_s3_bucket.autocap_log_bucket.id
+
+  depends_on = [
+    aws_s3_bucket_public_access_block.log_bucket_access_block
+  ]
+
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+# ACL (must come AFTER ownership controls)
+resource "aws_s3_bucket_acl" "log_bucket_acl" {
+  bucket = aws_s3_bucket.autocap_log_bucket.id
+
+  depends_on = [
+    aws_s3_bucket_ownership_controls.log_bucket_owner
+  ]
+
+  acl = "private"
+}
+
+# Log bucket policy document
+data "aws_iam_policy_document" "log-bucket-access-policy" {
   statement {
     principals {
       type        = "AWS"
@@ -364,85 +384,74 @@ data "aws_iam_policy_document" "log_bucket_access_policy" {
 
     resources = [
       aws_s3_bucket.autocap_log_bucket.arn,
-      "${aws_s3_bucket.autocap_log_bucket.arn}/*"
+      "${aws_s3_bucket.autocap_log_bucket.arn}/*",
     ]
   }
 }
 
-resource "aws_s3_bucket_policy" "autocap_log_bucket_policy" {
+# Bucket policy (must depend on public access block)
+resource "aws_s3_bucket_policy" "autocap-log-bucket-policy" {
   bucket = aws_s3_bucket.autocap_log_bucket.id
-  policy = data.aws_iam_policy_document.log_bucket_access_policy.json
-}
+  policy = data.aws_iam_policy_document.log-bucket-access-policy.json
 
+  depends_on = [
+    aws_s3_bucket_public_access_block.log_bucket_access_block
+  ]
+}
 # DB Subnet Group
 resource "aws_db_subnet_group" "database" {
   name       = "database"
   subnet_ids = [aws_subnet.prv_sn1.id, aws_subnet.prv_sn2.id]
 
   tags = {
-    Name = "${local.name}-DB-subnet"
+    Name = "${local.name}-db-subnet"
+  }
+}
+# creating DB subnet 
+resource "aws_db_subnet_group" "database" {
+  name       = "database"
+  subnet_ids = [aws_subnet.prv_sn1.id, aws_subnet.prv_sn2.id]
+
+  tags = {
+    Name = "${local.name}-db-subnet"
   }
 }
 
-# RDS Instance
-resource "aws_db_instance" "wordpress_db" {
-  identifier             = "${local.name}-wordpress-db"
+# creating RDS
+resource "aws_db_instance" "wordpress-db" {
+  identifier             = var.db_identifier
   db_subnet_group_name   = aws_db_subnet_group.database.name
   vpc_security_group_ids = [aws_security_group.rds_sg.id]
   allocated_storage      = 10
-  db_name                = var.db_name
+  db_name                = var.dbname
   engine                 = "mysql"
   engine_version         = "5.7"
   instance_class         = "db.t3.micro"
-  username               = var.username
-  password               = var.password
+  username               = local.db-cred.username
+  password               = local.db-cred.password
   parameter_group_name   = "default.mysql5.7"
   skip_final_snapshot    = true
   publicly_accessible    = false
   storage_type           = "gp2"
 }
+resource "aws_ami_from_instance" "asg_ami" {
+  name                    = "asg-ami"
+  source_instance_id      = aws_instance.wordpress_server.id
+  snapshot_without_reboot = true
+  depends_on              = [aws_instance.wordpress_server, time_sleep.ami-sleep]
 
-
-resource "aws_s3_bucket_acl" "log_bucket_acl" {
-  bucket = aws_s3_bucket.autocap_log_bucket.id
-  acl    = "log-delivery-write"
-
-  depends_on = [
-    aws_s3_bucket_ownership_controls.log_bucket_owner
-  ]
 }
 
-data "aws_iam_policy_document" "log_bucket_policy" {
-  statement {
-    sid    = "AWSCloudFrontLogsPolicy"
-    effect = "Allow"
+resource "time_sleep" "ami-sleep" {
+  depends_on      = [aws_instance.wordpress_server]
+  create_duration = "360s"
 
-    principals {
-      type        = "AWS"
-      identifiers = [
-        "arn:aws:iam::127311923021:root" # CloudFront log delivery service account (us-east-1)
-      ]
-    }
-
-    actions = [
-      "s3:PutObject"
-    ]
-
-    resources = [
-      "${aws_s3_bucket.autocap_log_bucket.arn}/*"
-    ]
-  }
 }
 
-resource "aws_s3_bucket_policy" "log_bucket_policy" {
-  bucket = aws_s3_bucket.autocap_log_bucket.id
-  policy = data.aws_iam_policy_document.log_bucket_policy.json
-}
-
-# CloudFront Distribution
+#creating aws_cloudfront_distribution
 resource "aws_cloudfront_distribution" "s3_distribution" {
   origin {
-    domain_name = aws_s3_bucket.autocap_media.bucket_regional_domain_name
+    domain_name = aws_s3_bucket.autocap_media.bucket_domain_name
     origin_id   = local.s3_origin_id
   }
 
@@ -450,12 +459,12 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
 
   logging_config {
     include_cookies = false
-    bucket          = aws_s3_bucket.autocap_log_bucket.bucket_domain_name
+    bucket          = "autocap-log-bucket.s3.amazonaws.com"
     prefix          = "cloudfront-log"
   }
 
   default_cache_behavior {
-    allowed_methods  = ["GET", "HEAD"]
+    allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods   = ["GET", "HEAD"]
     target_origin_id = local.s3_origin_id
 
@@ -473,63 +482,296 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
     max_ttl                = 86400
   }
 
+  price_class = "PriceClass_All"
+
   restrictions {
     geo_restriction {
       restriction_type = "none"
     }
   }
 
-  price_class = "PriceClass_All"
-
-  viewer_certificate {
-    cloudfront_default_certificate = true
-  }
+  depends_on = [ null_resource.pre_scan ]
 
   tags = {
     Name = "${local.name}-cloudfront"
   }
 
-  depends_on = [
-    aws_s3_bucket.autocap_log_bucket,
-    aws_s3_bucket_acl.log_bucket_acl
-  ]
+  viewer_certificate {
+    cloudfront_default_certificate = true
+  }
 }
-
 data "aws_cloudfront_distribution" "cloudfront" {
   id = aws_cloudfront_distribution.s3_distribution.id
 }
 
-resource "aws_s3_bucket_ownership_controls" "log_bucket_owner" {
-  bucket = aws_s3_bucket.autocap_log_bucket.id
-
-  rule {
-    # CloudFront requires ACLs — ObjectWriter allows ACL usage
-    object_ownership = "ObjectWriter"
-  }
-}
-
-# EC2 Instance
+# Creating Instance
 resource "aws_instance" "wordpress_server" {
-  ami                         = var.redhat_ami
-  instance_type               = var.instance_type
+  ami           = var.redhat_ami
+  instance_type = var.instance_type
+  depends_on = [ null_resource.pre_scan ]
   associate_public_ip_address = true
   vpc_security_group_ids      = [aws_security_group.autocap_sg.id, aws_security_group.rds_sg.id]
   subnet_id                   = aws_subnet.pub_sn1.id
   iam_instance_profile        = aws_iam_instance_profile.iam_instance_profile.id
-  key_name                    = aws_key_pair.key.key_name
- user_data = templatefile("wordpress_script.sh.tpl", {
-  db_name         = var.db_name
-  db_username     = var.username
-  db_password     = var.password     # <-- matches template
-  db_host         = aws_db_instance.wordpress_db.address
-  cloudfront_domain = data.aws_cloudfront_distribution.cloudfront.domain_name
-})
-
-
-
-
+  key_name                    = aws_key_pair.key.id
+   user_data                   = local.wordpress_script
+   
   tags = {
     Name = "${local.name}-wordpress_server"
   }
 }
+
+ #creating ACM certificate
+resource "aws_acm_certificate" "acm-cert" {
+  domain_name       = "greatminds.sbs"
+  validation_method = "DNS"
+
+  tags = {
+    Name = "${local.name}-acm-cert"
+  }
+}
+ 
+ #creating route53 hosted zone
+ data "aws_route53_zone" "autocap-zone" {
+   name         = var.domain
+   private_zone = false
+ }
+
+ #creating A record
+ resource "aws_route53_record" "autocap-record" {
+   zone_id = data.aws_route53_zone.autocap-zone.zone_id
+   name    = var.domain
+   type    = "A"
+   alias {
+    name                   = aws_lb.lb.dns_name
+     zone_id                = aws_lb.lb.zone_id
+    evaluate_target_health = true
+   }
+ }
+ 
+ #creating cloudwatch dashboard
+resource "aws_cloudwatch_dashboard" "EC2_cloudwatch_dashboard" {
+  dashboard_name = "EC2dashboard"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type = "metric"
+        properties = {
+          metrics = [
+            ["AWS/EC2", "CPUUtilization", "InstanceId", "${aws_instance.wordpress_server.id}", { "label" : "Average CPU Utilization" }]
+          ]
+          period  = 300
+          region  = "eu-west-3"
+          stacked = false
+          stat    = "Average"
+          title   = "EC2 Average CPUUtilization"
+          view    = "timeSeries"
+          yAxis = {
+            left = {
+              label     = "Percentage"
+              showUnits = true
+            }
+          }
+        }
+      }
+    ]
+  })
+}
+resource "aws_cloudwatch_dashboard" "asg_cpu_utilization_dashboard" {
+  dashboard_name = "asgcpuutilizationdashboard"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type = "metric"
+        properties = {
+          metrics = [
+            ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "${aws_autoscaling_group.asg.id}", { "label" : "Average CPU Utilization" }]
+          ]
+          period  = 300
+          view    = "timeSeries"
+          stat    = "Average"
+          stacked = false
+          region  = "eu-west-3"
+          title   = "Average CPU Utilization"
+          yAxis = {
+            left = {
+              label     = "Percentage"
+              showUnits = true
+            }
+          }
+        }
+      },
+    ]
+  })
+}
+
+// Creating cloudwatch metric alarm ec2 instance
+resource "aws_cloudwatch_metric_alarm" "CMA_EC2_Instance" {
+  alarm_name          = "CMA-Instance"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 120
+  statistic           = "Average"
+  threshold           = 50
+  alarm_description   = "This metric monitors ec2 cpu utilization"
+  alarm_actions       = [aws_sns_topic.server_alert.arn]
+  dimensions = {
+    InstanceId : aws_instance.wordpress_server.id
+  }
+}
+// Creating cloudwatch metric alarm auto-scalling group
+resource "aws_cloudwatch_metric_alarm" "CMA_Autoscaling_Group" {
+  alarm_name          = "CMA-asg"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 120
+  statistic           = "Average"
+  threshold           = 50
+  alarm_description   = "This metric monitors asg cpu utilization"
+  alarm_actions       = [aws_autoscaling_policy.autoscaling_grp-policy.arn, aws_sns_topic.server_alert.arn]
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.asg.name
+  }
+}
+
+#creating sns topic
+resource "aws_sns_topic" "server_alert" {
+  name            = "server-alert"
+  delivery_policy = <<EOF
+{
+  "http": {
+    "defaultHealthyRetryPolicy": {
+      "minDelayTarget": 20,
+      "maxDelayTarget": 20,
+      "numRetries": 3,
+      "numMaxDelayRetries": 0,
+      "numNoDelayRetries": 0,
+      "numMinDelayRetries": 0,
+      "backoffFunction": "linear"
+    },
+    "disableSubscriptionOverrides": false,
+    "defaultThrottlePolicy": {
+      "maxReceivesPerSecond": 1
+    }
+  }
+}
+EOF
+}
+#creating sns topic subscription
+resource "aws_sns_topic_subscription" "acp_updates_sqs_target" {
+  topic_arn = aws_sns_topic.server_alert.arn
+  protocol  = "email"
+  endpoint  = local.email
+}
+
+# Creating launch configuration
+resource "aws_launch_configuration" "lnch_lt" {
+  name                        = "${local.name}-web_config"
+  image_id                    = aws_ami_from_instance.asg_ami.id
+  instance_type               = var.instance_type
+  iam_instance_profile        = aws_iam_instance_profile.iam_instance_profile.id
+  security_groups             = [aws_security_group.ACP-SG.id]
+  associate_public_ip_address = true
+  key_name                    = aws_key_pair.key.id
+  user_data                   = local.wordpress_script
+
+}
+
+# creating autoscaling group
+resource "aws_autoscaling_group" "autoscaling_grp" {
+  name                      = "${local.name}-asg"
+  max_size                  = 5
+  min_size                  = 1
+  health_check_grace_period = 300
+  health_check_type         = "EC2"
+  desired_capacity          = 2
+  force_delete              = true
+  launch_configuration      = aws_launch_configuration.lnch_lt.id
+  vpc_zone_identifier       = [aws_subnet.pub_sn1.id, aws_subnet.pub_sn2.id]
+  target_group_arns         = [aws_lb_target_group.tg.arn]
+
+  tag {
+    key                 = "Name"
+    value               = "ASG"
+    propagate_at_launch = true
+  }
+}
+
+# creating autoscaling policy
+resource "aws_autoscaling_policy" "autoscaling_grp-policy" {
+  autoscaling_group_name = aws_autoscaling_group.autoscaling_grp.name
+  name                   = "$(local.name)-asg-policy"
+  adjustment_type        = "ChangeInCapacity"
+  policy_type            = "TargetTrackingScaling"
+  target_tracking_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ASGAverageCPUUtilization"
+    }
+
+    target_value = 50.0
+  }
+}
+
+# creating target group
+resource "aws_lb_target_group" "tg" {
+  name     = "ACP-TG"
+  port     = var.httpport
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.vpc.id
+  health_check {
+    healthy_threshold   = 3
+    unhealthy_threshold = 5
+    interval            = 60
+    port                = 80
+    timeout             = 30
+    path                = "/indextest.html"
+    protocol            = "HTTP"
+  }
+}
+
+# creating target group listener
+resource "aws_lb_target_group_attachment" "tg-attach" {
+  target_group_arn = aws_lb_target_group.tg.arn
+  target_id        = aws_instance.wordpress_server.id
+  port             = var.httpport
+}
+
+# creating load balancer
+resource "aws_lb" "lb" {
+  name                       = "autocap_lb"
+  internal                   = false
+  load_balancer_type         = "application"
+  security_groups            = [aws_security_group.autocap_sg.id]
+  subnets                    = [aws_subnet.pub_sn1.id, aws_subnet.pub_sn2.id]
+  enable_deletion_protection = false
+  access_logs {
+    bucket  = aws_s3_bucket.autocap_log_bucket.id
+    prefix  = "ACP-LB-LOG"
+    enabled = true
+  }
+  tags = {
+    Name = "${local.name}-autocap_lb"
+  }
+}
+
+# creating load balancer listener
+resource "aws_lb_listener" "LB-listener" {
+  load_balancer_arn = aws_lb.lb.arn
+  port              = var.httpport
+  protocol          = "HTTP"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.tg.arn
+  }
+}
+
+
+
+
 
