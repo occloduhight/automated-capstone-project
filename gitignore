@@ -18,3 +18,18 @@ crash.*.log
 
 # Ignore provider binaries on Windows
 *.exe
+# Scripts with sensitive info
+*.sh
+wordpress_script.sh.tpl
+
+# Backup files
+*.backup
+
+# Logs
+*.log
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
