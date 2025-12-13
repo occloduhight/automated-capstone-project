@@ -1,125 +1,167 @@
 locals {
-  name        = "autocap"
+   name        = "autocap"
   email       = "chinweodochi@gmail.com"
   db_cred     = var.db_cred
   s3_origin_id = aws_s3_bucket.autocap_media.id
 }
 
-# VPC & Subnets
+resource "null_resource" "pre_scan" {
+  provisioner "local-exec" {
+    command = "./checkov_scan.sh"
+
+    interpreter = ["bash", "-c"]
+  } 
+  
+  provisioner "local-exec" {
+    when = destroy
+    command = "rm -f checkov_output.JSON"
+  }
+
+triggers = {
+    always_run = "${timestamp()}"
+
+  }
+}
+
+output "pre_scan_status" {
+  value = "Pre-scan completed. Check Slack and checkov_output.JSON file for details."
+}
+# create VPC
 resource "aws_vpc" "vpc" {
   cidr_block       = var.cidr
   instance_tenancy = "default"
 
-  tags = { Name = "${local.name}-vpc" }
+  tags = {
+    Name = "${local.name}-vpc"
+  }
 }
 
+# create public subnet 1
 resource "aws_subnet" "pub_sn1" {
   vpc_id            = aws_vpc.vpc.id
   cidr_block        = var.pub_sn1
   availability_zone = "eu-west-3a"
 
-  tags = { Name = "${local.name}-pub_sn1" }
+  tags = {
+    Name = "${local.name}-pub_sn1"
+  }
 }
 
+# create public subnet 2
 resource "aws_subnet" "pub_sn2" {
   vpc_id            = aws_vpc.vpc.id
   cidr_block        = var.pub_sn2
   availability_zone = "eu-west-3b"
 
-  tags = { Name = "${local.name}-pub_sn2" }
+  tags = {
+    Name = "${local.name}-pub_sn2"
+  }
 }
 
+# create private subnet 1
 resource "aws_subnet" "prv_sn1" {
   vpc_id            = aws_vpc.vpc.id
   cidr_block        = var.prv_sn1
   availability_zone = "eu-west-3a"
 
-  tags = { Name = "${local.name}-prv_sn1" }
+  tags = {
+    Name = "${local.name}-prv_sn1"
+  }
 }
 
+# create private subnet 2
 resource "aws_subnet" "prv_sn2" {
   vpc_id            = aws_vpc.vpc.id
   cidr_block        = var.prv_sn2
   availability_zone = "eu-west-3b"
 
-  tags = { Name = "${local.name}-prv_sn2" }
+  tags = {
+    Name = "${local.name}-prv_sub2"
+  }
 }
 
-##########################
-# Internet & NAT Gateway
-##########################
+# create internet gateway
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.vpc.id
 
-  tags = { Name = "${local.name}-igw" }
+  tags = {
+    Name = "${local.name}-igw"
+  }
 }
 
-resource "aws_eip" "eip" {
-  domain = "vpc"
-
-  tags = { Name = "${local.name}-eip" }
-}
-
+# create nat gateway
 resource "aws_nat_gateway" "ngw" {
   allocation_id = aws_eip.eip.id
   subnet_id     = aws_subnet.pub_sn1.id
 
-  tags = { Name = "${local.name}-ngw" }
-  depends_on = [aws_internet_gateway.igw]
+  tags = {
+    Name = "${local.name}-ngw"
+  }
 }
 
-##########################
-# Route Tables
-##########################
+# create elastic ip
+resource "aws_eip" "eip" {
+  domain = "vpc"
+
+  tags = {
+    Name = "${local.name}-eip"
+  }
+}
+
+#  Create route tabble for public subnets
 resource "aws_route_table" "pub_rt" {
   vpc_id = aws_vpc.vpc.id
-
   route {
-    cidr_block = "0.0.0.0/0"
+    cidr_block = var.all_cidr
     gateway_id = aws_internet_gateway.igw.id
   }
-
-  tags = { Name = "${local.name}-pub_rt" }
+  tags = {
+    Name = "${local.name}-pub_rt"
+  }
 }
 
+#  Create route table for private subnets
 resource "aws_route_table" "prv_rt" {
   vpc_id = aws_vpc.vpc.id
-
   route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.ngw.id
+    cidr_block = var.all_cidr
+    gateway_id = aws_nat_gateway.ngw.id
   }
-
-  tags = { Name = "${local.name}-prv_rt" }
+  tags = {
+    Name = "${local.name}-prv_rt"
+  }
 }
 
-resource "aws_route_table_association" "pub_rt_asso1" {
+# Creating route table association for public subnet1
+resource "aws_route_table_association" "ass_pub_sn1" {
   subnet_id      = aws_subnet.pub_sn1.id
   route_table_id = aws_route_table.pub_rt.id
 }
 
-resource "aws_route_table_association" "pub_rt_asso2" {
+#  Creating route table association for public subnet2
+resource "aws_route_table_association" "ass_pub_sn2" {
   subnet_id      = aws_subnet.pub_sn2.id
   route_table_id = aws_route_table.pub_rt.id
 }
 
-resource "aws_route_table_association" "prv_rt_asso1" {
+#  Creating route table association for private_subnet_1
+resource "aws_route_table_association" "ass_prv_sn1" {
   subnet_id      = aws_subnet.prv_sn1.id
   route_table_id = aws_route_table.prv_rt.id
 }
 
-resource "aws_route_table_association" "prv_rt_asso2" {
+#  Creating route table association for private_subnet_2
+resource "aws_route_table_association" "ass_prv_sn2" {
   subnet_id      = aws_subnet.prv_sn2.id
   route_table_id = aws_route_table.prv_rt.id
 }
 
-##########################
-# Security Groups
-##########################
-resource "aws_security_group" "autocap_sg" {
-  name   = "${local.name}-sg"
-  vpc_id = aws_vpc.vpc.id
+#frontend security group
 
+resource "aws_security_group" "autocap_sg" {
+  name        = "autocap-sg"
+  description = "Allow inbound traffic"
+  vpc_id      = aws_vpc.vpc.id
   ingress {
     description = "HTTP"
     from_port   = var.httpport
@@ -127,154 +169,84 @@ resource "aws_security_group" "autocap_sg" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
   ingress {
-      description = "HTTPS"
+    description = "HTTPS"
     from_port   = var.httpsport
     to_port     = var.httpsport
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
   ingress {
-    from_port   = 22
-    to_port     = 22
+    description = "SSH"
+    from_port   = var.sshport
+    to_port     = var.sshport
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  tags = { Name = "${local.name}-sg" }
+  tags = {
+    Name = "${local.name}-autocap-sg"
+  }
 }
 
+#RDS security group
 resource "aws_security_group" "rds_sg" {
-  name        = "${local.name}-rds_sg"
+  name        = "rds-sg"
   description = "Allow outbound traffic"
   vpc_id      = aws_vpc.vpc.id
-
   ingress {
     description = "MYSQPORT"
     from_port   = var.mysqlport
     to_port     = var.mysqlport
-    protocol        = "tcp"
-    # security_groups = [aws_security_group.autocap_sg.id]
-     cidr_blocks = ["${var.pub_sn1}", "${var.pub_sn1}"]
+    protocol    = "tcp"
+    cidr_blocks = ["${var.pub_sn1}", "${var.pub_sn2}"]
   }
-
   egress {
+    description = "All TRAFFIC"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  tags = { Name = "${local.name}-rds_sg" }
+  tags = {
+    Name = "${local.name}-rds-sg"
+  }
 }
 
-##########################
-# Key Pair
-##########################
+#creating keypair RSA key of size 4096 bits
 resource "tls_private_key" "key" {
   algorithm = "RSA"
   rsa_bits  = 4096
 }
 
-resource "local_file" "private_key" {
+# creating private key
+resource "local_file" "key" {
   content         = tls_private_key.key.private_key_pem
-  filename        = "autocap_key.pem"
+  filename        = "autocap-key"
   file_permission = "600"
+  depends_on = [ null_resource.pre_scan ]
 }
 
+# creating public key
 resource "aws_key_pair" "key" {
-  key_name   = "autocap_pub_key"
+  key_name   = "autocap-pub-key"
   public_key = tls_private_key.key.public_key_openssh
 }
 
-
-resource "aws_iam_role" "iam_role" {
-  name = "${local.name}-iam_role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action    = "sts:AssumeRole"
-      Effect    = "Allow"
-      Principal = { Service = "ec2.amazonaws.com" }
-    }]
-  })
-
-  tags = {
-    Name = "${local.name}-iam_role"
-  }
-}
-
-# IAM Policy for EC2 to access S3, RDS, and network interfaces
-resource "aws_iam_policy" "ec2_permissions" {
-  name = "${local.name}-ec2_policy"
-
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Effect   = "Allow",
-        Action   = [
-          "ec2:DetachNetworkInterface",
-          "ec2:DescribeNetworkInterfaces",
-          "ec2:AttachNetworkInterface",
-          "rds:DescribeDBInstances",
-          "rds:ModifyDBInstance",
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:ListBucket"
-        ],
-        Resource = "*"
-      }
-    ]
-  })
-}
-
-# Attach IAM Policy to Role
-resource "aws_iam_role_policy_attachment" "attach_ec2_policy" {
-  role       = aws_iam_role.iam_role.name
-  policy_arn = aws_iam_policy.ec2_permissions.arn
-}
-
-resource "aws_iam_policy" "s3_policy" {
-  name   = "${local.name}-s3-policy"
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action   = ["s3:*"]
-      Resource = "*"
-      Effect   = "Allow"
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "iam_s3_attachment" {
-  role       = aws_iam_role.iam_role.name
-  policy_arn = aws_iam_policy.s3_policy.arn
-}
-
-resource "aws_iam_instance_profile" "iam_instance_profile" {
-  name = "${local.name}-instance_profile"
-  role = aws_iam_role.iam_role.name
-}
-
-##########################
-# S3 Buckets
-##########################
+# create S3 media bucktet
 resource "aws_s3_bucket" "autocap_media" {
   bucket        = "autocap-media"
   force_destroy = true
+  depends_on = [ null_resource.pre_scan ]
+  tags = {
+    Name = "${local.name}-autocap-media"
+  }
 
-  tags = { Name = "${local.name}-media" }
 }
 
 resource "aws_s3_bucket_public_access_block" "autocap_media_pub" {
@@ -283,148 +255,165 @@ resource "aws_s3_bucket_public_access_block" "autocap_media_pub" {
   block_public_policy     = false
   ignore_public_acls      = false
   restrict_public_buckets = false
+
 }
 
 resource "aws_s3_bucket_ownership_controls" "autocap_media_ctrl" {
   bucket = aws_s3_bucket.autocap_media.id
-
-  rule { object_ownership = "BucketOwnerEnforced" }
-
-  depends_on = [aws_s3_bucket_public_access_block.autocap_media_pub]
-}
-
-data "aws_iam_policy_document" "autocap_media_policy" {
-  statement {
-    principals {
-      type        = "AWS"
-      identifiers = ["*"]
-    }
-
-    actions   = [
-      "s3:GetObject",
-      "s3:ListBucket",
-      "s3:GetObjectVersion"
-    ]
-
-    resources = [
-      aws_s3_bucket.autocap_media.arn,
-      "${aws_s3_bucket.autocap_media.arn}/*"
-    ]
+  rule {
+    object_ownership = "BucketOwnerEnforced"
   }
+  depends_on = [aws_s3_bucket_public_access_block.autocap_media_pub]
+
 }
 
-
+# Media Bucket policy
 resource "aws_s3_bucket_policy" "autocap_media_policy" {
   bucket = aws_s3_bucket.autocap_media.id
   policy = data.aws_iam_policy_document.autocap_media_policy.json
 }
 
+data "aws_iam_policy_document" "autocap_media_policy" {
+
+  statement {
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    actions = [
+      "s3:GetObject",
+      "s3:ListBucket",
+      "s3:GetObjectVersion"
+    ]
+    resources = [
+      aws_s3_bucket.autocap_media.arn,
+      "${aws_s3_bucket.autocap_media.arn}/*",
+    ]
+  }
+}
+
 # S3 code Bucket 
 resource "aws_s3_bucket" "code_bucket" {
   bucket = "autocap-code-bucket"
-  # depends_on = [ null_resource.pre_scan ]
+  depends_on = [ null_resource.pre_scan ]
   force_destroy = true
 
   tags = {
     Name = "${local.name}-code-bucket"
   }
 }
-resource "aws_s3_bucket" "alb_log_bucket" {
-  bucket        = "autocap-alb-log-bucket"
-  force_destroy = true
-  tags = { Name = "${local.name}-alb-log-bucket" }
+
+# creating IAM role
+resource "aws_iam_role" "iam_role" {
+  name = "${local.name}-iam_role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Sid    = ""
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      },
+    ]
+  })
+  tags = {
+    tag-key = "iam_role"
+  }
 }
 
-resource "aws_s3_bucket_public_access_block" "alb_log_block" {
-  bucket                  = aws_s3_bucket.alb_log_bucket.id
-  block_public_acls       = true
-  ignore_public_acls      = true
-  block_public_policy     = false
+# creating media bucket iam policy
+resource "aws_iam_policy" "s3_policy" {
+  name = "autocap-s3-policy"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action   = ["s3:*"]
+        Resource = "*"
+        Effect   = "Allow"
+      },
+    ]
+  })
+}
+resource "aws_iam_role_policy_attachment" "iam_s3_attachment" {
+  role       = aws_iam_role.iam_role.name
+  policy_arn = aws_iam_policy.s3_policy.arn
+}
+
+#creating iam instance profile
+resource "aws_iam_instance_profile" "iam-instance-profile" {
+  name = "${local.name}-instance-profile"
+  role = aws_iam_role.iam_role.name
+}
+
+resource "aws_s3_bucket" "autocap_log_bucket" {
+  bucket        = "autocap-log-bucket"
+  force_destroy = true
+
+  tags = {
+    Name = "${local.name}-autocap-log-bucket"
+  }
+}
+
+# Use BucketOwnerPreferred
+resource "aws_s3_bucket_ownership_controls" "log_bucket_owner" {
+  bucket = aws_s3_bucket.autocap_log_bucket.id
+
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "log_bucket_access_block" {
+  bucket                  = aws_s3_bucket.autocap_log_bucket.id
+  block_public_acls       = false
+  block_public_policy     = true
+  ignore_public_acls      = false
   restrict_public_buckets = false
 }
 
-resource "aws_s3_bucket_ownership_controls" "alb_log_owner" {
-  bucket = aws_s3_bucket.alb_log_bucket.id
-  rule   { object_ownership = "BucketOwnerEnforced" }
-}
-data "aws_iam_policy_document" "alb_log_policy" {
+data "aws_iam_policy_document" "log_bucket_access_policy" {
   statement {
-    actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.alb_log_bucket.arn}/*"]
+    sid    = "AllowELBLogging"
+    effect = "Allow"
+
+    actions = [
+      "s3:PutObject",
+      "s3:PutObjectAcl"
+    ]
+
+    resources = [
+      "${aws_s3_bucket.autocap_log_bucket.arn}/*"
+    ]
 
     principals {
       type        = "Service"
       identifiers = ["elasticloadbalancing.amazonaws.com"]
     }
-
-    condition {
-      test     = "StringEquals"
-      variable = "s3:x-amz-acl"
-      values   = ["bucket-owner-full-control"]
-    }
   }
 }
-resource "aws_s3_bucket_policy" "alb_log_bucket_policy" {
-  bucket = aws_s3_bucket.alb_log_bucket.id
-  policy = data.aws_iam_policy_document.alb_log_policy.json
-}
-# data "aws_iam_policy_document" "alb_log_policy" {
-#   statement {
-#     principals {
-#       type        = "Service"
-#       identifiers = ["elasticloadbalancing.amazonaws.com"]
-#     }
 
-#     actions   = ["s3:PutObject"]
-
-#     resources = [
-# #       "${aws_s3_bucket.alb_log_bucket.arn}/*"
-#     ]
-#   }
-# }
-
-
-# resource "aws_s3_bucket_policy" "alb_log_bucket_policy" {
-#   bucket = aws_s3_bucket.alb_log_bucket.id
-#   policy = data.aws_iam_policy_document.alb_log_policy.json
-# }
-
-resource "aws_s3_bucket" "cloudfront_log_bucket" {
-  bucket        = "autocap-cloudfront-log-bucket"
-  force_destroy = true
-  tags = { Name = "${local.name}-cloudfront-log-bucket" }
+resource "aws_s3_bucket_policy" "autocap_log_bucket_policy" {
+  bucket = aws_s3_bucket.autocap_log_bucket.id
+  policy = data.aws_iam_policy_document.log_bucket_access_policy.json
 }
 
-resource "aws_s3_bucket_public_access_block" "cloudfront_log_block" {
-  bucket                  = aws_s3_bucket.cloudfront_log_bucket.id
-  block_public_acls       = false
-  ignore_public_acls      = false
-  block_public_policy     = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_ownership_controls" "cloudfront_log_owner" {
-  bucket = aws_s3_bucket.cloudfront_log_bucket.id
-  rule   { object_ownership = "ObjectWriter" }
-}
-
-resource "aws_s3_bucket_acl" "cloudfront_log_acl" {
-  bucket = aws_s3_bucket.cloudfront_log_bucket.id
-  acl    = "log-delivery-write"
-  depends_on = [aws_s3_bucket_ownership_controls.cloudfront_log_owner]
-}
-
-##########################
-# RDS
-##########################
+# creating DB subnet 
 resource "aws_db_subnet_group" "database" {
   name       = "database"
   subnet_ids = [aws_subnet.prv_sn1.id, aws_subnet.prv_sn2.id]
-  tags       = { Name = "${local.name}-db-subnet" }
+
+  tags = {
+    Name = "${local.name}-db-subnet"
+  }
 }
 
+# creating RDS
 resource "aws_db_instance" "wordpress_db" {
-  identifier             = var.db_identifier
+  identifier             = var.db-identifier
   db_subnet_group_name   = aws_db_subnet_group.database.name
   vpc_security_group_ids = [aws_security_group.rds_sg.id]
   allocated_storage      = 10
@@ -439,167 +428,20 @@ resource "aws_db_instance" "wordpress_db" {
   publicly_accessible    = false
   storage_type           = "gp2"
 }
-##########################
-# EC2 Instance
-##########################
-resource "aws_instance" "wordpress_server" {
-  ami                    = var.redhat_ami
-  instance_type          = var.instance_type
-  subnet_id              = aws_subnet.pub_sn1.id
-  associate_public_ip_address = true
-  vpc_security_group_ids = [aws_security_group.autocap_sg.id, aws_security_group.rds_sg.id]
-  key_name               = aws_key_pair.key.key_name
-  iam_instance_profile   = aws_iam_instance_profile.iam_instance_profile.id
-  user_data              = local.wordpress_script
-   depends_on = [
-    aws_db_instance.wordpress_db,
-    aws_cloudfront_distribution.s3_distribution
-  ]
-
-  tags = { Name = "${local.name}-wordpress_server" }
-}
-
-##########################
-# AMI from Instance (for AutoScaling)
-##########################
-resource "time_sleep" "ami_sleep" {
-  create_duration = "360s"
-  depends_on      = [aws_instance.wordpress_server]
-}
-
 resource "aws_ami_from_instance" "asg_ami" {
   name                    = "asg-ami"
   source_instance_id      = aws_instance.wordpress_server.id
   snapshot_without_reboot = true
-  depends_on              = [time_sleep.ami_sleep]
+  depends_on              = [aws_instance.wordpress_server, time_sleep.ami-sleep]
+
 }
 
-##########################
-# Launch Template
-##########################
-resource "aws_launch_template" "lnch_lt" {
-  name_prefix   = "${local.name}-web_lt"
-  image_id      = aws_ami_from_instance.asg_ami.id
-  instance_type = var.instance_type
-  key_name      = aws_key_pair.key.key_name
+resource "time_sleep" "ami-sleep" {
+  depends_on      = [aws_instance.wordpress_server]
+  create_duration = "360s"
 
-  iam_instance_profile {
-    name = aws_iam_instance_profile.iam_instance_profile.name
-  }
-
-  network_interfaces {
-    device_index               = 0
-    associate_public_ip_address = true
-    security_groups             = [aws_security_group.autocap_sg.id]
-  }
-
-  # user_data = local.wordpress_script
-   user_data = base64encode(local.wordpress_script)
 }
 
-##########################
-# Target Group
-##########################
-resource "aws_lb_target_group" "tg" {
-  name     = "ACP-TG"
-  port     = var.httpport
-  protocol = "HTTP"
-  vpc_id   = aws_vpc.vpc.id
-
-  health_check {
-    path                = "/"
-    protocol            = "HTTP"
-    interval            = 30
-    timeout             = 5
-    healthy_threshold   = 3
-    unhealthy_threshold = 3
-    matcher             = "200"
-  }
-
-  tags = { Name = "${local.name}-tg" }
-}
-
-resource "aws_lb_target_group_attachment" "tg_attach" {
-  target_group_arn = aws_lb_target_group.tg.arn
-  target_id        = aws_instance.wordpress_server.id
-  port             = var.httpport
-}
-
-##########################
-# Application Load Balancer
-##########################
-resource "aws_lb" "lb" {
-  name               = "lb"
-  load_balancer_type = "application"
-  subnets            = [aws_subnet.pub_sn1.id, aws_subnet.pub_sn2.id]
-  security_groups    = [aws_security_group.autocap_sg.id]
-  internal           = false
-  enable_deletion_protection = false
-
-  # access_logs {
-  #   bucket  = aws_s3_bucket.alb_log_bucket.id
-  #   prefix  = "ACP-LB-LOG"
-  #   enabled = true
-  # }
-
-  tags = { Name = "${local.name}-autocap_lb" }
-}
-
-resource "aws_lb_listener" "lb_listener" {
-  load_balancer_arn = aws_lb.lb.arn
-  port              = var.httpport
-  protocol          = "HTTP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.tg.arn
-  }
-}
-
-##########################
-# AutoScaling Group
-##########################
-resource "aws_autoscaling_group" "asg" {
-  name                      = "${local.name}-asg"
-  max_size                  = 5
-  min_size                  = 1
-  desired_capacity          = 2
-  vpc_zone_identifier       = [aws_subnet.pub_sn1.id, aws_subnet.pub_sn2.id]
-  health_check_type         = "EC2"
-  health_check_grace_period = 300
-  force_delete              = true
-
-  launch_template {
-    id      = aws_launch_template.lnch_lt.id
-    version = "$Latest"
-  }
-
-  target_group_arns = [aws_lb_target_group.tg.arn]
-
-  tag {
-    key                 = "Name"
-    value               = "ASG"
-    propagate_at_launch = true
-  }
-}
-
-resource "aws_autoscaling_policy" "autoscaling_grp_policy" {
-  name                   = "${local.name}-asg-policy"
-  autoscaling_group_name = aws_autoscaling_group.asg.name
-  policy_type            = "TargetTrackingScaling"
-  adjustment_type        = "ChangeInCapacity"
-
-  target_tracking_configuration {
-    predefined_metric_specification {
-      predefined_metric_type = "ASGAverageCPUUtilization"
-    }
-    target_value = 50.0
-  }
-}
-
-##########################
-# CloudFront Distribution
-##########################
 #creating aws_cloudfront_distribution
 resource "aws_cloudfront_distribution" "s3_distribution" {
   origin {
@@ -609,17 +451,11 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
 
   enabled = true
 
-  # logging_config {
-  #   include_cookies = false
-  #   bucket          = "autocap-log-bucket.s3.amazonaws.com"
-  #   prefix          = "cloudfront-log"
-  # }
   logging_config {
-  include_cookies = false
-  bucket          = aws_s3_bucket.cloudfront_log_bucket.bucket_domain_name
-  prefix          = "cloudfront/"
-}
-
+    include_cookies = false
+    bucket          = "autocap-log-bucket.s3.amazonaws.com"
+    prefix          = "cloudfront-log"
+  }
 
   default_cache_behavior {
     allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
@@ -648,7 +484,7 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
     }
   }
 
-  # depends_on = [ null_resource.pre_scan ]
+  depends_on = [ null_resource.pre_scan ]
 
   tags = {
     Name = "${local.name}-cloudfront"
@@ -662,21 +498,50 @@ data "aws_cloudfront_distribution" "cloudfront" {
   id = aws_cloudfront_distribution.s3_distribution.id
 }
 
-##########################
-resource "aws_sns_topic" "server_alert" {
-  name = "server-alert"
+# Creating Instance
+resource "aws_instance" "wordpress_server" {
+  ami           = var.redhat_ami
+  instance_type = var.instance_type
+  depends_on = [ null_resource.pre_scan ]
+  associate_public_ip_address = true
+  vpc_security_group_ids      = [aws_security_group.autocap_sg.id, aws_security_group.rds_sg.id]
+  subnet_id                   = aws_subnet.pub_sn1.id
+  iam_instance_profile        = aws_iam_instance_profile.iam-instance-profile.id
+  key_name                    = aws_key_pair.key.id
+  user_data                   = local.wordpress_script
+  tags = {
+    Name = "${local.name}-wordpress_server"
+  }
 }
+ #creating ACM certificate
+resource "aws_acm_certificate" "acm-cert" {
+  domain_name       = "greatminds.sbs"
+  validation_method = "DNS"
 
-resource "aws_sns_topic_subscription" "acp_updates_sqs_target" {
-  topic_arn = aws_sns_topic.server_alert.arn
-  protocol  = "email"
-  endpoint  = local.email
+  tags = {
+    Name = "${local.name}-acm-cert"
+  }
 }
+ 
+ #creating route53 hosted zone
+ data "aws_route53_zone" "autocap-zone" {
+   name         = var.domain
+   private_zone = false
+ }
 
-# ##########################
-# CloudWatch Dashboards
-# ##########################
-#creating cloudwatch dashboard
+ #creating A record
+ resource "aws_route53_record" "autocap-record" {
+   zone_id = data.aws_route53_zone.autocap-zone.zone_id
+   name    = var.domain
+   type    = "A"
+   alias {
+    name                   = aws_lb.lb.dns_name
+     zone_id                = aws_lb.lb.zone_id
+    evaluate_target_health = true
+   }
+ }
+ 
+ #creating cloudwatch dashboard
 resource "aws_cloudwatch_dashboard" "EC2_cloudwatch_dashboard" {
   dashboard_name = "EC2dashboard"
 
@@ -705,12 +570,38 @@ resource "aws_cloudwatch_dashboard" "EC2_cloudwatch_dashboard" {
     ]
   })
 }
+resource "aws_cloudwatch_dashboard" "asg_cpu_utilization_dashboard" {
+  dashboard_name = "asgcpuutilizationdashboard"
 
-##########################
-# CloudWatch Alarms
-##########################
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type = "metric"
+        properties = {
+          metrics = [
+            ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "${aws_autoscaling_group.asg.id}", { "label" : "Average CPU Utilization" }]
+          ]
+          period  = 300
+          view    = "timeSeries"
+          stat    = "Average"
+          stacked = false
+          region  = "eu-west-3"
+          title   = "Average CPU Utilization"
+          yAxis = {
+            left = {
+              label     = "Percentage"
+              showUnits = true
+            }
+          }
+        }
+      },
+    ]
+  })
+}
+
+// Creating cloudwatch metric alarm ec2 instance
 resource "aws_cloudwatch_metric_alarm" "CMA_EC2_Instance" {
-  alarm_name          = "CMA-EC2"
+  alarm_name          = "CMA-Instance"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 2
   metric_name         = "CPUUtilization"
@@ -718,13 +609,15 @@ resource "aws_cloudwatch_metric_alarm" "CMA_EC2_Instance" {
   period              = 120
   statistic           = "Average"
   threshold           = 50
+  alarm_description   = "This metric monitors ec2 cpu utilization"
   alarm_actions       = [aws_sns_topic.server_alert.arn]
-
-  dimensions = { InstanceId = aws_instance.wordpress_server.id }
+  dimensions = {
+    InstanceId : aws_instance.wordpress_server.id
+  }
 }
-
-resource "aws_cloudwatch_metric_alarm" "CMA_ASG" {
-  alarm_name          = "CMA-ASG"
+// Creating cloudwatch metric alarm auto-scalling group
+resource "aws_cloudwatch_metric_alarm" "CMA_Autoscaling_Group" {
+  alarm_name          = "CMA-asg"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 2
   metric_name         = "CPUUtilization"
@@ -732,7 +625,163 @@ resource "aws_cloudwatch_metric_alarm" "CMA_ASG" {
   period              = 120
   statistic           = "Average"
   threshold           = 50
-  alarm_actions       = [aws_autoscaling_policy.autoscaling_grp_policy.arn, aws_sns_topic.server_alert.arn]
-
-  dimensions = { AutoScalingGroupName = aws_autoscaling_group.asg.name }
+  alarm_description   = "This metric monitors asg cpu utilization"
+  alarm_actions       = [aws_autoscaling_policy.asg-policy.arn, aws_sns_topic.server_alert.arn]
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.asg.name
+  }
 }
+
+#creating sns topic
+resource "aws_sns_topic" "server_alert" {
+  name            = "server-alert"
+  delivery_policy = <<EOF
+{
+  "http": {
+    "defaultHealthyRetryPolicy": {
+      "minDelayTarget": 20,
+      "maxDelayTarget": 20,
+      "numRetries": 3,
+      "numMaxDelayRetries": 0,
+      "numNoDelayRetries": 0,
+      "numMinDelayRetries": 0,
+      "backoffFunction": "linear"
+    },
+    "disableSubscriptionOverrides": false,
+    "defaultThrottlePolicy": {
+      "maxReceivesPerSecond": 1
+    }
+  }
+}
+EOF
+}
+#creating sns topic subscription
+resource "aws_sns_topic_subscription" "autocap_updates_sqs_target" {
+  topic_arn = aws_sns_topic.server_alert.arn
+  protocol  = "email"
+  endpoint  = local.email
+}
+
+# Creating launch template
+resource "aws_launch_template" "lnch_lt" {
+  name_prefix   = "${local.name}-web_lt"
+  image_id      = aws_ami_from_instance.asg_ami.id
+  instance_type = var.instance_type
+  key_name      = aws_key_pair.key.key_name
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.iam-instance-profile.name
+  }
+
+  network_interfaces {
+    device_index               = 0
+    associate_public_ip_address = true
+    security_groups             = [aws_security_group.autocap_sg.id]
+  }
+
+  # user_data = local.wordpress_script
+   user_data = base64encode(local.wordpress_script)
+}
+
+# creating autoscaling group
+resource "aws_autoscaling_group" "asg" {
+  name                      = "${local.name}-asg"
+  max_size                  = 5
+  min_size                  = 1
+  health_check_grace_period = 300
+  health_check_type         = "EC2"
+  desired_capacity          = 2
+  force_delete              = true
+
+  vpc_zone_identifier       = [aws_subnet.pub_sn1.id, aws_subnet.pub_sn2.id]
+  target_group_arns         = [aws_lb_target_group.tg.arn]
+launch_template {
+    id      = aws_launch_template.lnch_lt.id
+    version = "$Latest"
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "ASG"
+    propagate_at_launch = true
+  }
+}
+
+# creating autoscaling policy
+resource "aws_autoscaling_policy" "asg-policy" {
+  autoscaling_group_name = aws_autoscaling_group.asg.name
+  name                   = "$(local.name)-asg-policy"
+  adjustment_type        = "ChangeInCapacity"
+  policy_type            = "TargetTrackingScaling"
+  target_tracking_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ASGAverageCPUUtilization"
+    }
+
+    target_value = 50.0
+  }
+}
+
+# creating target group
+resource "aws_lb_target_group" "tg" {
+  name     = "autocap-tg"
+  port     = var.httpport
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.vpc.id
+  health_check {
+    healthy_threshold   = 3
+    unhealthy_threshold = 5
+    interval            = 60
+    port                = 80
+    timeout             = 30
+    path                = "/indextest.html"
+    protocol            = "HTTP"
+  }
+}
+
+# creating target group listener
+resource "aws_lb_target_group_attachment" "tg-attach" {
+  target_group_arn = aws_lb_target_group.tg.arn
+  target_id        = aws_instance.wordpress_server.id
+  port             = var.httpport
+}
+
+# ALB Setup with Access Logs-
+resource "aws_lb" "lb" {
+  name               = "autocap-lb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.autocap_sg.id]
+  subnets            = [aws_subnet.pub_sn1.id, aws_subnet.pub_sn2.id]
+
+  enable_deletion_protection = false
+
+  access_logs {
+    bucket  = aws_s3_bucket.autocap_log_bucket.id
+    prefix  = "AUTOCAP-LB-LOG"
+    enabled = false
+  }
+
+  depends_on = [
+    aws_s3_bucket_policy.autocap_log_bucket_policy,
+    aws_s3_bucket.autocap_log_bucket
+  ]
+
+  tags = {
+    Name = "${local.name}-autocap-lb"
+  }
+}
+
+# creating load balancer listener
+resource "aws_lb_listener" "lb-listener" {
+  load_balancer_arn = aws_lb.lb.arn
+  port              = var.httpport
+  protocol          = "HTTP"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.tg.arn
+  }
+}
+
+
+

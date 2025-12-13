@@ -1,23 +1,35 @@
 #!/bin/bash
-# Set variables
-TERRAFORM_CODE_DIR="./"                   
-CHECKOV_OUTPUT_FILE="checkov_output.json" 
 
-# Run Checkov scan and save output
-checkov -d "$TERRAFORM_CODE_DIR" > "$CHECKOV_OUTPUT_FILE"
+# -----------------------------
+# Variables
+# -----------------------------
+TERRAFORM_CODE_DIR="./"                  # Directory containing Terraform files
+CHECKOV_OUTPUT_FILE="checkov_output.json" # File to save Checkov scan output
 
-# Always continue Terraform even if Checkov finds failures
-if [ $? -ne 0 ]; then
-  echo "Checkov scan completed with findings, but Terraform will continue."
+# -----------------------------
+# Run Checkov scan
+# -----------------------------
+echo "Running Checkov scan on directory: $TERRAFORM_CODE_DIR"
+checkov -d "$TERRAFORM_CODE_DIR" -o json > "$CHECKOV_OUTPUT_FILE"
+CHECKOV_EXIT_CODE=$?
+
+# -----------------------------
+# Evaluate scan result
+# -----------------------------
+if [ $CHECKOV_EXIT_CODE -ne 0 ]; then
+    echo "Checkov scan completed with findings. Issues are recorded in $CHECKOV_OUTPUT_FILE."
+    echo "Terraform execution will continue despite findings."
 else
-  echo "Checkov scan completed with no issues."
+    echo "Checkov scan completed successfully. No issues found."
 fi
 
+# Exit with success so Terraform continues
 exit 0
 
 
-# !/bin/bash
-#  Set variables
+
+#!/bin/bash
+ # Set variables
 # TERRAFORM_CODE_DIR="./"                   # Directory containing Terraform files
 # CHECKOV_OUTPUT_FILE="checkov_output.JSON"  # File to save Checkov scan output
 
